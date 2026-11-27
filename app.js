@@ -68,18 +68,40 @@
     state.cats = Object.assign(base.cats, saved.cats || {});
     ["chits", "tx", "dues"].forEach((k) => { if (!Array.isArray(state[k])) state[k] = []; });
   }
+  let loadOk = true, persisted = null;
+  async function readIdb() {
+    for (let i = 0; i < 3; i++) {
+      try { return { ok: true, v: await tmo(idbGet("state"), 5000) }; } catch (e) { await new Promise((r) => setTimeout(r, 400)); }
+    }
+    return { ok: false };
+  }
+  function readLs() { try { const r = localStorage.getItem("kk_state"); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
   async function load() {
-    let saved = null;
-    try { saved = await tmo(idbGet("state"), 3000); } catch (e) { /* fall back */ }
-    if (!saved) { try { const r = localStorage.getItem("kk_state"); if (r) saved = JSON.parse(r); } catch (e) { /* ignore */ } }
+    const a = await readIdb(), b = readLs();
+    const ta = a.ok && a.v && typeof a.v === "object" ? (a.v.savedAt || 1) : 0;
+    const tb = b && typeof b === "object" ? (b.savedAt || 1) : 0;
+    // രണ്ട് സ്ഥലത്തും (IndexedDB + localStorage) സേവ് ചെയ്യുന്നു; പുതിയത് എടുക്കും
+    const saved = ta || tb ? (ta >= tb ? a.v : b) : null;
+    if (!a.ok && !b) loadOk = false; // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
     if (saved && typeof saved === "object") adopt(saved);
     state.ui.txMonth = todayIso().slice(0, 7);
+  }
+  function retryLoad() {
+    let n = 0;
+    const t = setInterval(async () => {
+      n++;
+      const a = await readIdb();
+      if (a.ok) { clearInterval(t); loadOk = true; if (a.v && typeof a.v === "object") { adopt(a.v); state.ui.txMonth = todayIso().slice(0, 7); } render(); }
+      else if (n >= 20) clearInterval(t);
+    }, 3000);
   }
   const persist = () => { clearTimeout(timer); timer = setTimeout(persistNow, 200); };
   async function persistNow() {
     clearTimeout(timer);
-    try { await tmo(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); }
-    catch (e) { try { localStorage.setItem("kk_state", JSON.stringify(state)); } catch (e2) { /* full */ } }
+    if (!loadOk) return;
+    state.savedAt = Date.now();
+    try { localStorage.setItem("kk_state", JSON.stringify(state)); } catch (e) { /* full */ }
+    try { await tmo(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); } catch (e) { /* localStorage copy remains */ }
   }
 
   /* ---------- toast & sheet ---------- */
@@ -113,6 +135,10 @@
      CHIT (ചിട്ടി)
      ===================================================================== */
   const getChit = (id) => state.chits.find((c) => c.id === id) || null;
+  // ഒരു മാസം ഒന്നിലധികം പേർക്ക് ചിട്ടി കിട്ടാം: c.got[മാസം] = [{mid, amt}, ...] (പഴയ ഒറ്റ-ആൾ രൂപവും വായിക്കും)
+  function gotRaw(c, i) { const g = c.got && c.got[i]; if (!g) return []; return (Array.isArray(g) ? g : [g]).filter((x) => x && typeof x === "object"); }
+  function gotL(c, i) { return gotRaw(c, i).filter((x) => x.mid); }
+  const gotHas = (c, i, mid) => gotL(c, i).some((x) => x.mid === mid);
   const cellKey = (mid, i) => mid + "|" + i;
   const cellOf = (c, mid, i) => c.cells[cellKey(mid, i)] || null;
   const paidOf = (c, x) => (x && x.s === "paid" ? (x.amt != null ? x.amt : c.amount) : 0);
@@ -153,7 +179,6 @@
     state.chits.forEach((c) => {
       const ci = curIdx(c), st = monthStat(c, ci);
       const started = monthDiff(c.start, todayIso().slice(0, 7)) >= 0;
-      const got = c.got && c.got[ci] && c.members.find((m) => m.id === c.got[ci].mid);
       h += '<button type="button" class="chit-card" data-act="open-chit" data-id="' + c.id + '">' +
         '<div class="row between"><h3 class="trunc">' + esc(c.name) + '</h3><span class="tag gold num">' + money(c.amount) + " / മാസം</span></div>" +
         '<div class="muted small" style="margin-top:2px">' + c.members.length + " അംഗങ്ങൾ • " + esc(mLabel(c.start)) + " മുതൽ " + c.months + " മാസം</div>" +
@@ -174,14 +199,16 @@
     h += '<div class="seg" style="margin:14px 0 8px"><button type="button" data-act="chit-view" data-v="month" class="' + (ui.chitView === "month" ? "on" : "") + '">മാസം</button><button type="button" data-act="chit-view" data-v="grid" class="' + (ui.chitView === "grid" ? "on" : "") + '">മുഴുവൻ പട്ടിക</button></div>';
     if (ui.chitView === "grid") return h + chitGrid(c);
     h += '<div class="chips" id="chipRow">' + Array.from({ length: c.months }, (_, i) => '<button type="button" class="chip ' + (i === mi ? "on " : "") + (i === ci ? "cur" : "") + '" data-act="chit-month" data-i="' + i + '">' + esc(mShort(chitMonth(c, i))) + " " + String(chitMonth(c, i)).slice(2, 4) + "</button>").join("") + "</div>";
-    const got = (c.got && c.got[mi]) || {};
-    h += '<div class="card" style="margin-bottom:12px"><div class="row"><div class="grow"><div class="small muted">ഈ മാസം ചിട്ടി എടുത്തത്</div>' +
-      '<select class="select" data-chg="got-mid" style="margin-top:4px"><option value="">— ആരുമില്ല —</option>' + c.members.map((m) => '<option value="' + m.id + '"' + (got.mid === m.id ? " selected" : "") + ">" + esc(m.name) + "</option>").join("") + "</select></div>" +
-      '<div style="width:120px"><div class="small muted">തുക (₹)</div><input class="input num" data-chg="got-amt" inputmode="decimal" value="' + (got.amt != null ? got.amt : "") + '" placeholder="' + (c.members.length * c.amount) + '" style="margin-top:4px"></div></div></div>';
+    const gl = gotRaw(c, mi), rows = gl.length ? gl : [{ mid: "" }];
+    h += '<div class="card" style="margin-bottom:12px"><div class="small muted">ഈ മാസം ചിട്ടി എടുത്തവർ</div>' + rows.map((g, k) =>
+      '<div class="row" style="margin-top:8px;align-items:flex-end;gap:8px"><div class="grow"><select class="select" data-chg="got-mid" data-k="' + k + '"><option value="">— ആരുമില്ല —</option>' + c.members.map((m) => '<option value="' + m.id + '"' + (g.mid === m.id ? " selected" : "") + ">" + esc(m.name) + "</option>").join("") + "</select></div>" +
+      '<div style="width:104px"><input class="input num" data-chg="got-amt" data-k="' + k + '" inputmode="decimal" aria-label="തുക (₹)" value="' + (g.amt != null ? g.amt : "") + '" placeholder="' + (c.members.length * c.amount) + '"></div>' +
+      (gl.length ? '<button type="button" class="icon-btn" data-act="got-del" data-k="' + k + '" aria-label="നീക്കം ചെയ്യുക" style="width:38px;height:38px">' + ICON.x + "</button>" : "") + "</div>").join("") +
+      (gl.length && gl.every((x) => x.mid) ? '<button type="button" class="btn ghost sm" data-act="got-add" style="margin-top:10px">+ ഒരാളെ കൂടി ചേർക്കുക</button>' : "") + "</div>";
     h += '<div class="card">';
     if (!c.members.length) h += '<div class="empty"><b>അംഗങ്ങൾ ഇല്ല</b>മുകളിലെ "അംഗങ്ങൾ" അമർത്തി പേരുകൾ ചേർക്കുക.</div>';
     c.members.forEach((m) => {
-      const x = cellOf(c, m.id, mi), ms = memberStat(c, m.id), isGot = got.mid === m.id;
+      const x = cellOf(c, m.id, mi), ms = memberStat(c, m.id), isGot = gotHas(c, mi, m.id);
       h += '<div class="mrow"><button type="button" class="tick ' + tickClass(c, x) + '" data-act="tick" data-m="' + m.id + '" aria-label="' + esc(m.name) + ' അടച്ചു എന്ന് അടയാളപ്പെടുത്തുക">' + tickIcon(c, x) + "</button>" +
         '<div class="grow"><div class="trunc" style="font-weight:700">' + esc(m.name) + (isGot ? ' <span class="tag gold">★ എടുത്തു</span>' : "") + "</div>" +
         '<div class="small muted num">' + ms.paid + "/" + c.months + " മാസം" + (x && x.s === "paid" && paidOf(c, x) !== c.amount ? " • " + money(paidOf(c, x)) : "") + (x && x.s === "miss" ? " • ഈ മാസം ഒഴിവ്" : "") + (x && x.note ? " • " + esc(x.note) : "") + "</div></div>" +
@@ -199,13 +226,13 @@
     c.members.forEach((m) => {
       const ms = memberStat(c, m.id);
       h += "<tr><td>" + esc(m.name) + "</td>" + Array.from({ length: c.months }, (_, i) => {
-        const x = cellOf(c, m.id, i), g = c.got && c.got[i] && c.got[i].mid === m.id;
+        const x = cellOf(c, m.id, i), g = gotHas(c, i, m.id);
         const sym = !x ? '<span class="muted">·</span>' : x.s === "miss" ? '<span class="no">✗</span>' : (paidOf(c, x) < c.amount ? '<span class="pt">½</span>' : '<span class="ok">✓</span>');
         return '<td class="' + (i === ci ? "cur" : "") + '">' + sym + (g ? ' <span style="color:var(--gold)">★</span>' : "") + "</td>";
       }).join("") + "<td>" + money(ms.total) + '</td><td class="' + (ms.due > 0 ? "neg" : "pos") + '">' + (ms.due > 0 ? money(ms.due) : "✓") + "</td></tr>";
     });
     h += "</tbody><tfoot><tr><td>കിട്ടിയത്</td>" + Array.from({ length: c.months }, (_, i) => "<td>" + compact(monthStat(c, i).coll) + "</td>").join("") + "<td>" + money(c.members.reduce((a, m) => a + memberStat(c, m.id).total, 0)) + "</td><td>" + money(c.members.reduce((a, m) => a + memberStat(c, m.id).due, 0)) + "</td></tr>" +
-      "<tr><td>എടുത്തത് ★</td>" + Array.from({ length: c.months }, (_, i) => { const g = c.got && c.got[i]; const m = g && c.members.find((x) => x.id === g.mid); return "<td>" + (m ? esc(clean(m.name).split(" ")[0]) : "") + "</td>"; }).join("") + "<td></td><td></td></tr></tfoot></table></div>";
+      "<tr><td>എടുത്തത് ★</td>" + Array.from({ length: c.months }, (_, i) => { const ns = gotL(c, i).map((g) => c.members.find((x) => x.id === g.mid)).filter(Boolean).map((m) => esc(clean(m.name).split(" ")[0])); return "<td>" + ns.join(", ") + "</td>"; }).join("") + "<td></td><td></td></tr></tfoot></table></div>";
     return h + '<p class="muted small" style="margin:8px 2px">✓ അടച്ചു • ½ ഭാഗികം • ✗ ഒഴിവ് • · ബാക്കി • ★ ആ മാസം ചിട്ടി എടുത്തയാൾ</p>';
   }
 
@@ -229,6 +256,8 @@
     "open-chit"(el) { state.ui.chitId = el.dataset.id; state.ui.chitMonth = null; state.ui.chitView = "month"; persist(); render(); window.scrollTo(0, 0); },
     "back-chits"() { state.ui.chitId = null; persist(); render(); },
     "chit-view"(el) { state.ui.chitView = el.dataset.v; render(); },
+    "got-add"() { const c = getChit(state.ui.chitId); if (!c) return; const i = state.ui.chitMonth; if (!c.got) c.got = {}; c.got[i] = gotRaw(c, i).concat([{ mid: "" }]); persist(); render(); },
+    "got-del"(el) { const c = getChit(state.ui.chitId); if (!c) return; const i = state.ui.chitMonth, a = gotRaw(c, i).filter((x, n) => n !== Number(el.dataset.k)); if (a.length) c.got[i] = a; else delete c.got[i]; persist(); render(); },
     "chit-month"(el) { state.ui.chitMonth = Number(el.dataset.i); render(); },
     "new-chit"() {
       openSheet({
@@ -281,7 +310,7 @@
       confirmBox("അംഗത്തെ നീക്കണോ?", m.name + " — ഈ അംഗത്തിന്റെ എല്ലാ രേഖകളും മായ്ക്കും.", "നീക്കുക", () => {
         c.members = c.members.filter((x) => x.id !== m.id);
         Object.keys(c.cells).forEach((k) => { if (k.indexOf(m.id + "|") === 0) delete c.cells[k]; });
-        Object.keys(c.got || {}).forEach((i) => { if (c.got[i].mid === m.id) delete c.got[i]; });
+        Object.keys(c.got || {}).forEach((i) => { const a = gotRaw(c, i).filter((x) => x.mid !== m.id); if (a.length) c.got[i] = a; else delete c.got[i]; });
         persist(); render();
       });
     },
@@ -327,9 +356,14 @@
   function chitChange(el) {
     const c = getChit(state.ui.chitId); if (!c) return;
     const i = state.ui.chitMonth; if (!c.got) c.got = {};
-    const cur = c.got[i] || {};
-    if (el.dataset.chg === "got-mid") { if (!el.value) delete c.got[i]; else c.got[i] = { mid: el.value, amt: cur.amt }; }
-    if (el.dataset.chg === "got-amt") { if (!cur.mid) { el.value = ""; return toast("ആദ്യം ആളെ തിരഞ്ഞെടുക്കുക.", true); } c.got[i] = { mid: cur.mid, amt: el.value === "" ? undefined : num(el.value) }; }
+    const k = Number(el.dataset.k || 0), arr = gotRaw(c, i).map((x) => Object.assign({}, x));
+    while (arr.length <= k) arr.push({ mid: "" });
+    if (el.dataset.chg === "got-mid") {
+      if (el.value && arr.some((x, n) => n !== k && x.mid === el.value)) { toast("ഈ ആളെ ഇതിനകം ചേർത്തിട്ടുണ്ട്.", true); render(); return; }
+      if (!el.value) arr.splice(k, 1); else arr[k] = { mid: el.value, amt: arr[k].amt };
+    }
+    if (el.dataset.chg === "got-amt") { if (!arr[k].mid) { el.value = ""; return toast("ആദ്യം ആളെ തിരഞ്ഞെടുക്കുക.", true); } arr[k] = { mid: arr[k].mid, amt: el.value === "" ? undefined : num(el.value) }; }
+    if (arr.length) c.got[i] = arr; else delete c.got[i];
     persist(); render();
   }
 
@@ -723,7 +757,7 @@
       title: "ക്രമീകരണങ്ങൾ", noActions: true, focus: false,
       body: '<div class="field">രൂപം</div><div class="seg" id="themeSeg" style="margin-bottom:14px">' + [["auto", "ഓട്ടോ"], ["light", "വെളുപ്പ്"], ["dark", "ഇരുട്ട്"]].map((t) => '<button type="button" data-act="theme" data-v="' + t[0] + '" class="' + (s.theme === t[0] ? "on" : "") + '">' + t[1] + "</button>").join("") + "</div>" +
         '<div class="field">ആപ്പ് ലോക്ക്</div><div class="row" style="margin-bottom:14px"><button type="button" class="btn ghost sm" data-act="set-pin">' + (s.pin ? "പിൻ മാറ്റുക" : "പിൻ സെറ്റ് ചെയ്യുക") + "</button>" + (s.pin ? '<button type="button" class="btn ghost sm" data-act="rm-pin">ഒഴിവാക്കുക</button>' : "") + "</div>" +
-        '<div class="field">ബാക്കപ്പ്</div><div class="muted small" style="margin-bottom:8px">ഡാറ്റ ഈ ഫോണിൽ മാത്രമാണ് ഉള്ളത്. ഫോൺ മാറ്റുകയോ ബ്രൗസർ ഡാറ്റ മായ്ക്കുകയോ ചെയ്താൽ നഷ്ടപ്പെടും. ഇടയ്ക്കിടെ ബാക്കപ്പ് എടുത്ത് WhatsApp / Drive-ൽ സൂക്ഷിക്കുക.' + (s.lastBackup ? " അവസാന ബാക്കപ്പ്: " + (ds === 0 ? "ഇന്ന്" : ds + " ദിവസം മുമ്പ്") + "." : " ഇതുവരെ ബാക്കപ്പ് എടുത്തിട്ടില്ല.") + '</div><div class="row" style="margin-bottom:14px"><button type="button" class="btn teal sm" data-act="backup">ബാക്കപ്പ് എടുക്കുക</button><button type="button" class="btn ghost sm" data-act="restore">ബാക്കപ്പ് തിരിച്ചെടുക്കുക</button></div>' +
+        '<div class="muted small" style="margin-bottom:12px">സേവ് നില: ' + (state.savedAt ? "അവസാനം " + new Date(state.savedAt).toLocaleString("ml-IN", { dateStyle: "medium", timeStyle: "short" }) + " ന് ഫോണിൽ സേവ് ആയി" : "ഇതുവരെ സേവ് ചെയ്തിട്ടില്ല") + (persisted === true ? " • സ്റ്റോറേജ് സംരക്ഷിതം" : persisted === false ? " • സ്റ്റോറേജ് സാധാരണ (ഫോണിൽ സ്ഥലം കുറഞ്ഞാൽ മായാം — ബാക്കപ്പ് എടുക്കുക)" : "") + '</div><div class="field">ബാക്കപ്പ്</div><div class="muted small" style="margin-bottom:8px">ഡാറ്റ ഈ ഫോണിൽ മാത്രമാണ് ഉള്ളത്. ഫോൺ മാറ്റുകയോ ബ്രൗസർ ഡാറ്റ മായ്ക്കുകയോ ചെയ്താൽ നഷ്ടപ്പെടും. ഇടയ്ക്കിടെ ബാക്കപ്പ് എടുത്ത് WhatsApp / Drive-ൽ സൂക്ഷിക്കുക.' + (s.lastBackup ? " അവസാന ബാക്കപ്പ്: " + (ds === 0 ? "ഇന്ന്" : ds + " ദിവസം മുമ്പ്") + "." : " ഇതുവരെ ബാക്കപ്പ് എടുത്തിട്ടില്ല.") + '</div><div class="row" style="margin-bottom:14px"><button type="button" class="btn teal sm" data-act="backup">ബാക്കപ്പ് എടുക്കുക</button><button type="button" class="btn ghost sm" data-act="restore">ബാക്കപ്പ് തിരിച്ചെടുക്കുക</button></div>' +
         '<input type="file" id="restoreFile" accept="application/json,.json" hidden>' +
         (custom("out").length || custom("in").length ? '<div class="field">നിങ്ങൾ ചേർത്ത വിഭാഗങ്ങൾ</div><div class="chips" style="flex-wrap:wrap;overflow:visible">' + custom("out").map((c) => '<button type="button" class="chip" data-act="del-cat" data-t="out" data-c="' + esc(c) + '">' + esc(c) + " ✕</button>").join("") + custom("in").map((c) => '<button type="button" class="chip" data-act="del-cat" data-t="in" data-c="' + esc(c) + '">' + esc(c) + " (വരവ്) ✕</button>").join("") + "</div>" : "")
     });
@@ -746,7 +780,8 @@
     }
     const titles = { chit: "ചിട്ടി", fin: "വരവ്-ചെലവ്", dues: "കൊടുക്കാനും കിട്ടാനും" };
     const ds = daysSince(state.settings.lastBackup);
-    const nudge = hasData() && (ds === null || ds > 30) ? '<div class="card" style="margin-bottom:12px;background:var(--gold-soft);box-shadow:none"><div class="row"><div class="grow small">' + (ds === null ? "ഇതുവരെ ബാക്കപ്പ് എടുത്തിട്ടില്ല." : "ബാക്കപ്പ് എടുത്തിട്ട് " + ds + " ദിവസമായി.") + ' ഡാറ്റ ഫോണിൽ മാത്രമാണ്.</div><button type="button" class="btn gold sm" data-act="backup">ബാക്കപ്പ്</button></div></div>' : "";
+    const nudge0 = hasData() && (ds === null || ds > 30) ? '<div class="card" style="margin-bottom:12px;background:var(--gold-soft);box-shadow:none"><div class="row"><div class="grow small">' + (ds === null ? "ഇതുവരെ ബാക്കപ്പ് എടുത്തിട്ടില്ല." : "ബാക്കപ്പ് എടുത്തിട്ട് " + ds + " ദിവസമായി.") + ' ഡാറ്റ ഫോണിൽ മാത്രമാണ്.</div><button type="button" class="btn gold sm" data-act="backup">ബാക്കപ്പ്</button></div></div>' : "";
+    const nudge = (loadOk ? "" : '<div class="card" style="margin-bottom:12px;background:#fde8e8;box-shadow:none"><div class="small"><b>ഡാറ്റ വായിക്കാൻ കഴിയുന്നില്ല.</b> നിങ്ങളുടെ ഡാറ്റ സുരക്ഷിതമാക്കാൻ ഇപ്പോൾ ഒന്നും സേവ് ചെയ്യുന്നില്ല. ആപ്പ് പൂർണമായി അടച്ച് വീണ്ടും തുറക്കുക.</div></div>') + nudge0;
     const body = ui.tab === "fin" ? financeTab() : ui.tab === "dues" ? duesTab() : chitTab();
     root.innerHTML = '<header class="top"><div class="wrap"><h1>' + titles[ui.tab] + '</h1><button type="button" class="icon-btn" data-act="settings" aria-label="ക്രമീകരണങ്ങൾ">' + ICON.gear + '</button></div></header><main class="wrap">' + nudge + body + "</main>" +
       '<nav class="nav" aria-label="പ്രധാന മെനു"><div class="wrap">' + TABS.map((t) => '<button type="button" data-act="tab" data-t="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '" ' + (ui.tab === t[0] ? 'aria-current="page"' : "") + ">" + ICON[t[2]] + "<span>" + t[1] + "</span></button>").join("") + "</div></nav>";
@@ -791,6 +826,8 @@
     await load(); applyTheme();
     locked = !!state.settings.pin;
     wire(); render();
+    if (!loadOk) retryLoad();
+    try { if (navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then((p) => { persisted = p; }); } catch (e) { /* ignore */ }
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) navigator.serviceWorker.register("sw.js").catch(() => {});
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
     if (window.__KK_TEST) window.__KK = { state: () => state, render, ALL, coreActions };
