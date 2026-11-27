@@ -68,7 +68,7 @@
     state.cats = Object.assign(base.cats, saved.cats || {});
     ["chits", "tx", "dues"].forEach((k) => { if (!Array.isArray(state[k])) state[k] = []; });
   }
-  let loadOk = true, persisted = null, idbErr = "", retryT = null;
+  let loadOk = true, persisted = null, idbErr = "", retryT = null, idbSkip = false;
   const lsOnly = () => { try { return localStorage.getItem("kk_lsonly") === "1"; } catch (e) { return false; } };
   async function readIdb() {
     for (let i = 0; i < 3; i++) {
@@ -83,7 +83,7 @@
     const tb = b && typeof b === "object" ? (b.savedAt || 1) : 0;
     // രണ്ട് സ്ഥലത്തും (IndexedDB + localStorage) സേവ് ചെയ്യുന്നു; പുതിയത് എടുക്കും
     const saved = ta || tb ? (ta >= tb ? a.v : b) : null;
-    if (!a.ok && !b && !lsOnly()) loadOk = false; // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
+    if (!a.ok) idbSkip = true; // ഫോണിലെ IndexedDB തകരാറിലാണെങ്കിൽ മുന്നറിയിപ്പില്ലാതെ localStorage ഉപയോഗിക്കും // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
     if (saved && typeof saved === "object") adopt(saved);
     state.ui.txMonth = todayIso().slice(0, 7);
   }
@@ -102,7 +102,7 @@
     if (!loadOk) return;
     state.savedAt = Date.now();
     try { localStorage.setItem("kk_state", JSON.stringify(state)); } catch (e) { /* full */ }
-    if (lsOnly()) return;
+    if (lsOnly() || idbSkip) return;
     try { await tmo(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); } catch (e) { dbp = null; /* localStorage copy remains */ }
   }
 
