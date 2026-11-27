@@ -55,7 +55,7 @@
     if (!window.indexedDB) return rej(new Error("no idb"));
     const r = indexedDB.open("kanakku", 1);
     r.onupgradeneeded = () => r.result.createObjectStore("kv");
-    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbp = null; rej(r.error); }; r.onblocked = () => { idbErr = "blocked"; };
   }));
   const tmo = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
   async function idbGet(k) { const d = await idb(); return new Promise((res, rej) => { const q = d.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
@@ -68,27 +68,28 @@
     state.cats = Object.assign(base.cats, saved.cats || {});
     ["chits", "tx", "dues"].forEach((k) => { if (!Array.isArray(state[k])) state[k] = []; });
   }
-  let loadOk = true, persisted = null;
+  let loadOk = true, persisted = null, idbErr = "", retryT = null;
+  const lsOnly = () => { try { return localStorage.getItem("kk_lsonly") === "1"; } catch (e) { return false; } };
   async function readIdb() {
     for (let i = 0; i < 3; i++) {
-      try { return { ok: true, v: await tmo(idbGet("state"), 5000) }; } catch (e) { await new Promise((r) => setTimeout(r, 400)); }
+      try { return { ok: true, v: await tmo(idbGet("state"), 5000) }; } catch (e) { idbErr = String((e && (e.name || e.message)) || e); dbp = null; await new Promise((r) => setTimeout(r, 400)); }
     }
     return { ok: false };
   }
   function readLs() { try { const r = localStorage.getItem("kk_state"); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
   async function load() {
-    const a = await readIdb(), b = readLs();
+    const a = lsOnly() ? { ok: false } : await readIdb(), b = readLs();
     const ta = a.ok && a.v && typeof a.v === "object" ? (a.v.savedAt || 1) : 0;
     const tb = b && typeof b === "object" ? (b.savedAt || 1) : 0;
     // രണ്ട് സ്ഥലത്തും (IndexedDB + localStorage) സേവ് ചെയ്യുന്നു; പുതിയത് എടുക്കും
     const saved = ta || tb ? (ta >= tb ? a.v : b) : null;
-    if (!a.ok && !b) loadOk = false; // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
+    if (!a.ok && !b && !lsOnly()) loadOk = false; // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
     if (saved && typeof saved === "object") adopt(saved);
     state.ui.txMonth = todayIso().slice(0, 7);
   }
   function retryLoad() {
     let n = 0;
-    const t = setInterval(async () => {
+    const t = retryT = setInterval(async () => {
       n++;
       const a = await readIdb();
       if (a.ok) { clearInterval(t); loadOk = true; if (a.v && typeof a.v === "object") { adopt(a.v); state.ui.txMonth = todayIso().slice(0, 7); } render(); }
@@ -101,7 +102,8 @@
     if (!loadOk) return;
     state.savedAt = Date.now();
     try { localStorage.setItem("kk_state", JSON.stringify(state)); } catch (e) { /* full */ }
-    try { await tmo(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); } catch (e) { /* localStorage copy remains */ }
+    if (lsOnly()) return;
+    try { await tmo(idbSet("state", JSON.parse(JSON.stringify(state))), 4000); } catch (e) { dbp = null; /* localStorage copy remains */ }
   }
 
   /* ---------- toast & sheet ---------- */
@@ -258,6 +260,12 @@
     "chit-view"(el) { state.ui.chitView = el.dataset.v; render(); },
     "got-add"() { const c = getChit(state.ui.chitId); if (!c) return; const i = state.ui.chitMonth; if (!c.got) c.got = {}; c.got[i] = gotRaw(c, i).concat([{ mid: "" }]); persist(); render(); },
     "got-del"(el) { const c = getChit(state.ui.chitId); if (!c) return; const i = state.ui.chitMonth, a = gotRaw(c, i).filter((x, n) => n !== Number(el.dataset.k)); if (a.length) c.got[i] = a; else delete c.got[i]; persist(); render(); },
+    "ls-only"() {
+      confirmBox("ലളിതമായ സേവ് ഉപയോഗിക്കണോ?", "ഈ ഫോണിലെ പഴയ ഡാറ്റ ഇപ്പോൾ വായിക്കാൻ കഴിയുന്നില്ല. ഇനി മുതൽ പുതിയ ഡാറ്റ ബ്രൗസറിന്റെ ലളിതമായ സ്റ്റോറേജിൽ സേവ് ചെയ്യും. പഴയ ഡാറ്റ തിരിച്ചുവരണമെന്നില്ല.", "ശരി, തുടങ്ങാം", () => {
+        try { localStorage.setItem("kk_lsonly", "1"); } catch (e) { /* ignore */ }
+        clearInterval(retryT); loadOk = true; persistNow(); render(); toast("ഇനി സേവ് ചെയ്യാം.");
+      }, false);
+    },
     "chit-month"(el) { state.ui.chitMonth = Number(el.dataset.i); render(); },
     "new-chit"() {
       openSheet({
@@ -781,7 +789,7 @@
     const titles = { chit: "ചിട്ടി", fin: "വരവ്-ചെലവ്", dues: "കൊടുക്കാനും കിട്ടാനും" };
     const ds = daysSince(state.settings.lastBackup);
     const nudge0 = hasData() && (ds === null || ds > 30) ? '<div class="card" style="margin-bottom:12px;background:var(--gold-soft);box-shadow:none"><div class="row"><div class="grow small">' + (ds === null ? "ഇതുവരെ ബാക്കപ്പ് എടുത്തിട്ടില്ല." : "ബാക്കപ്പ് എടുത്തിട്ട് " + ds + " ദിവസമായി.") + ' ഡാറ്റ ഫോണിൽ മാത്രമാണ്.</div><button type="button" class="btn gold sm" data-act="backup">ബാക്കപ്പ്</button></div></div>' : "";
-    const nudge = (loadOk ? "" : '<div class="card" style="margin-bottom:12px;background:#fde8e8;box-shadow:none"><div class="small"><b>ഡാറ്റ വായിക്കാൻ കഴിയുന്നില്ല.</b> നിങ്ങളുടെ ഡാറ്റ സുരക്ഷിതമാക്കാൻ ഇപ്പോൾ ഒന്നും സേവ് ചെയ്യുന്നില്ല. ആപ്പ് പൂർണമായി അടച്ച് വീണ്ടും തുറക്കുക.</div></div>') + nudge0;
+    const nudge = (loadOk ? "" : '<div class="card" style="margin-bottom:12px;background:#fde8e8;box-shadow:none"><div class="small"><b>ഡാറ്റ വായിക്കാൻ കഴിയുന്നില്ല.</b> പഴയ ഡാറ്റ സുരക്ഷിതമാക്കാൻ ഇപ്പോൾ ഒന്നും സേവ് ചെയ്യുന്നില്ല. ആപ്പ് പൂർണമായി അടച്ച് വീണ്ടും തുറക്കുക. അപ്പോഴും വരുന്നുണ്ടെങ്കിൽ താഴെയുള്ള ബട്ടൺ അമർത്തുക. (കാരണം: ' + esc(idbErr || "സമയം കഴിഞ്ഞു") + ')</div><button type="button" class="btn ghost sm" data-act="ls-only" style="margin-top:10px">ലളിതമായ സേവ് ഉപയോഗിച്ച് തുടങ്ങുക</button></div>') + nudge0;
     const body = ui.tab === "fin" ? financeTab() : ui.tab === "dues" ? duesTab() : chitTab();
     root.innerHTML = '<header class="top"><div class="wrap"><h1>' + titles[ui.tab] + '</h1><button type="button" class="icon-btn" data-act="settings" aria-label="ക്രമീകരണങ്ങൾ">' + ICON.gear + '</button></div></header><main class="wrap">' + nudge + body + "</main>" +
       '<nav class="nav" aria-label="പ്രധാന മെനു"><div class="wrap">' + TABS.map((t) => '<button type="button" data-act="tab" data-t="' + t[0] + '" class="' + (ui.tab === t[0] ? "on" : "") + '" ' + (ui.tab === t[0] ? 'aria-current="page"' : "") + ">" + ICON[t[2]] + "<span>" + t[1] + "</span></button>").join("") + "</div></nav>";
