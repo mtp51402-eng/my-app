@@ -61,11 +61,11 @@
   async function idbGet(k) { const d = await idb(); return new Promise((res, rej) => { const q = d.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); }); }
   async function idbSet(k, v) { const d = await idb(); return new Promise((res, rej) => { const t = d.transaction("kv", "readwrite"); t.objectStore("kv").put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }); }
   function adopt(saved) {
-    const base = freshState();
+    const base = freshState(), dS = base.settings, dU = base.ui, dC = base.cats;
     state = Object.assign(base, saved);
-    state.settings = Object.assign(base.settings, saved.settings || {});
-    state.ui = Object.assign(base.ui, saved.ui || {});
-    state.cats = Object.assign(base.cats, saved.cats || {});
+    state.settings = Object.assign(dS, saved.settings || {});
+    state.ui = Object.assign(dU, saved.ui || {});
+    state.cats = Object.assign(dC, saved.cats || {});
     ["chits", "tx", "dues"].forEach((k) => { if (!Array.isArray(state[k])) state[k] = []; });
   }
   let loadOk = true, persisted = null, idbErr = "", retryT = null, idbSkip = false;
@@ -209,12 +209,17 @@
       '<div style="width:104px"><input class="input num" data-chg="got-amt" data-k="' + k + '" inputmode="decimal" aria-label="തുക (₹)" value="' + (g.amt != null ? g.amt : "") + '" placeholder="' + (c.members.length * c.amount) + '"></div>' +
       (gl.length ? '<button type="button" class="icon-btn" data-act="got-del" data-k="' + k + '" aria-label="നീക്കം ചെയ്യുക" style="width:38px;height:38px">' + ICON.x + "</button>" : "") + "</div>").join("") +
       (gl.length && gl.every((x) => x.mid) ? '<button type="button" class="btn ghost sm" data-act="got-add" style="margin-top:10px">+ ഒരാളെ കൂടി ചേർക്കുക</button>' : "") + "</div>";
+    // ഈ മാസം വരെ ആർക്കൊക്കെ കിട്ടി (മുൻ മാസങ്ങളിലേത് ഉൾപ്പെടെ)
+    const gotUpTo = (mid) => { for (let j = 0; j <= mi; j++) if (gotHas(c, j, mid)) return j; return -1; };
+    const left = c.members.filter((m) => gotUpTo(m.id) < 0);
+    if (c.members.length) h += '<div class="card" style="margin-bottom:10px"><div class="small muted">ഇനി എടുക്കാൻ ബാക്കി (' + left.length + " / " + c.members.length + ")</div>" +
+      '<div style="font-weight:700;margin-top:4px">' + (left.length ? left.map((m) => esc(clean(m.name))).join(", ") : "എല്ലാവർക്കും കിട്ടി") + "</div></div>";
     h += '<div class="card">';
     if (!c.members.length) h += '<div class="empty"><b>അംഗങ്ങൾ ഇല്ല</b>മുകളിലെ "അംഗങ്ങൾ" അമർത്തി പേരുകൾ ചേർക്കുക.</div>';
     c.members.forEach((m) => {
-      const x = cellOf(c, m.id, mi), ms = memberStat(c, m.id), isGot = gotHas(c, mi, m.id);
+      const x = cellOf(c, m.id, mi), ms = memberStat(c, m.id), gj = gotUpTo(m.id), isGot = gj === mi;
       h += '<div class="mrow"><button type="button" class="tick ' + tickClass(c, x) + '" data-act="tick" data-m="' + m.id + '" aria-label="' + esc(m.name) + ' അടച്ചു എന്ന് അടയാളപ്പെടുത്തുക">' + tickIcon(c, x) + "</button>" +
-        '<div class="grow"><div class="trunc" style="font-weight:700">' + esc(m.name) + (isGot ? ' <span class="tag gold">★ എടുത്തു</span>' : "") + "</div>" +
+        '<div class="grow"><div class="trunc" style="font-weight:700">' + esc(m.name) + (gj < 0 ? "" : isGot ? ' <span class="tag gold">★ ഈ മാസം എടുത്തു</span>' : ' <span class="tag gold">★ എടുത്തു • ' + esc(mShort(chitMonth(c, gj))) + "</span>") + "</div>" +
         '<div class="small muted num">' + ms.paid + "/" + c.months + " മാസം" + (x && x.s === "paid" && paidOf(c, x) !== c.amount ? " • " + money(paidOf(c, x)) : "") + (x && x.s === "miss" ? " • ഈ മാസം ഒഴിവ്" : "") + (x && x.note ? " • " + esc(x.note) : "") + "</div></div>" +
         (ms.due > 0 ? '<span class="tag neg num">ബാക്കി ' + money(ms.due) + "</span>" : '<span class="tag pos">ക്ലിയർ</span>') +
         '<button type="button" class="icon-btn" data-act="cell" data-m="' + m.id + '" aria-label="വിശദാംശം" style="width:34px;height:34px">' + ICON.dots + "</button></div>";
