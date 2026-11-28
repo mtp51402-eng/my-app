@@ -1,5 +1,5 @@
 /* Service worker — offline-first app shell. Firebase requests are never cached (the app has its own offline queue). */
-const VERSION = "kk-v1.0.4";
+const VERSION = "kk-v1.0.5";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./manifest.webmanifest",
   "./icons/icon.svg", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/apple-touch-icon.png", "./icons/favicon-32.png"

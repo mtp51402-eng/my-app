@@ -77,29 +77,30 @@
     return { ok: false };
   }
   function readLs() { try { const r = localStorage.getItem("kk_state"); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
-  async function load() {
-    const a = lsOnly() ? { ok: false } : await readIdb(), b = readLs();
-    const ta = a.ok && a.v && typeof a.v === "object" ? (a.v.savedAt || 1) : 0;
-    const tb = b && typeof b === "object" ? (b.savedAt || 1) : 0;
-    // രണ്ട് സ്ഥലത്തും (IndexedDB + localStorage) സേവ് ചെയ്യുന്നു; പുതിയത് എടുക്കും
-    const saved = ta || tb ? (ta >= tb ? a.v : b) : null;
-    if (!a.ok) idbSkip = true; // ഫോണിലെ IndexedDB തകരാറിലാണെങ്കിൽ മുന്നറിയിപ്പില്ലാതെ localStorage ഉപയോഗിക്കും // വായിക്കാൻ കഴിഞ്ഞില്ല: ശൂന്യമായ ഡാറ്റ കൊണ്ട് മുകളിലെഴുതരുത്
-    if (saved && typeof saved === "object") adopt(saved);
+  let idbReady = false, pendingSave = false;
+  // ആപ്പ് ഉടൻ തുറക്കാൻ: ആദ്യം localStorage-ൽ നിന്ന് വായിക്കും; IndexedDB പിന്നാലെ പശ്ചാത്തലത്തിൽ
+  function load() {
+    const b = readLs();
+    if (b && typeof b === "object") adopt(b);
     state.ui.txMonth = todayIso().slice(0, 7);
   }
-  function retryLoad() {
-    let n = 0;
-    const t = retryT = setInterval(async () => {
-      n++;
-      const a = await readIdb();
-      if (a.ok) { clearInterval(t); loadOk = true; if (a.v && typeof a.v === "object") { adopt(a.v); state.ui.txMonth = todayIso().slice(0, 7); } render(); }
-      else if (n >= 20) clearInterval(t);
-    }, 3000);
+  async function loadIdbBg() {
+    if (lsOnly()) { idbSkip = true; idbReady = true; return; }
+    let a = { ok: false };
+    try { a = { ok: true, v: await tmo(idbGet("state"), 2500) }; } catch (e) { idbErr = String((e && (e.name || e.message)) || e); dbp = null; }
+    idbReady = true;
+    if (!a.ok) { idbSkip = true; }
+    else if (a.v && typeof a.v === "object" && (a.v.savedAt || 1) > (state.savedAt || 0)) {
+      try { adopt(a.v); state.ui.txMonth = todayIso().slice(0, 7); render(); } catch (e) { /* ignore */ }
+    }
+    if (pendingSave) { pendingSave = false; persistNow(); }
   }
+  function retryLoad() {}
   const persist = () => { clearTimeout(timer); timer = setTimeout(persistNow, 200); };
   async function persistNow() {
     clearTimeout(timer);
     if (!loadOk) return;
+    if (!idbReady) { pendingSave = true; try { localStorage.setItem("kk_state", JSON.stringify(Object.assign({}, state, { savedAt: Date.now() }))); } catch (e) { /* full */ } return; }
     state.savedAt = Date.now();
     try { localStorage.setItem("kk_state", JSON.stringify(state)); } catch (e) { /* full */ }
     if (lsOnly() || idbSkip) return;
@@ -180,12 +181,13 @@
     }
     state.chits.forEach((c) => {
       const ci = curIdx(c), st = monthStat(c, ci);
+      const gotNames = gotL(c, ci).map((g) => c.members.find((x) => x.id === g.mid)).filter(Boolean).map((m) => clean(m.name)).join(", ");
       const started = monthDiff(c.start, todayIso().slice(0, 7)) >= 0;
       h += '<button type="button" class="chit-card" data-act="open-chit" data-id="' + c.id + '">' +
         '<div class="row between"><h3 class="trunc">' + esc(c.name) + '</h3><span class="tag gold num">' + money(c.amount) + " / മാസം</span></div>" +
         '<div class="muted small" style="margin-top:2px">' + c.members.length + " അംഗങ്ങൾ • " + esc(mLabel(c.start)) + " മുതൽ " + c.months + " മാസം</div>" +
         '<div class="row between" style="margin-top:10px"><div><div class="small muted">' + (started ? esc(mLabel(chitMonth(c, ci))) + " — കിട്ടിയത്" : "തുടങ്ങിയിട്ടില്ല") + '</div><div class="num" style="font-weight:800;font-size:1.2rem">' + money(st.coll) + ' <span class="muted small" style="font-weight:600">/ ' + money(st.exp) + "</span></div></div>" +
-        '<div style="text-align:right">' + (st.pend + st.miss ? '<span class="tag neg">' + (st.pend + st.miss) + " പേർ ബാക്കി</span>" : '<span class="tag pos">എല്ലാവരും അടച്ചു</span>') + (got ? '<div class="small muted" style="margin-top:4px">എടുത്തത്: ' + esc(got.name) + "</div>" : "") + "</div></div>" +
+        '<div style="text-align:right">' + (st.pend + st.miss ? '<span class="tag neg">' + (st.pend + st.miss) + " പേർ ബാക്കി</span>" : '<span class="tag pos">എല്ലാവരും അടച്ചു</span>') + (gotNames ? '<div class="small muted" style="margin-top:4px">എടുത്തത്: ' + esc(gotNames) + "</div>" : "") + "</div></div>" +
         '<div class="prog" aria-hidden="true">' + Array.from({ length: c.months }, (_, i) => '<i class="' + (i < ci ? "done" : i === ci && started ? "now" : "") + '"></i>').join("") + "</div></button>";
     });
     return h + '<button type="button" class="fab" data-act="new-chit" aria-label="പുതിയ ചിട്ടി">' + ICON.plus + "</button>";
@@ -830,11 +832,19 @@
     window.addEventListener("pagehide", persistNow);
   }
 
+  function showFatal(e) {
+    const root = document.getElementById("root");
+    if (!root) return;
+    let raw = ""; try { raw = localStorage.getItem("kk_state") || ""; } catch (x) { /* ignore */ }
+    root.innerHTML = '<div style="padding:24px;font-family:inherit"><h2>ആപ്പ് തുറക്കാൻ ഒരു തകരാർ</h2><p>നിങ്ങളുടെ ഡാറ്റ നഷ്ടമായിട്ടില്ല. താഴെയുള്ള ബട്ടണുകൾ അമർത്തുക.</p><p style="color:#b3261e;font-size:.85rem;word-break:break-word">' + String((e && e.message) || e).replace(/</g, "&lt;") + '</p><button id="fxCopy" style="padding:12px 16px;margin:6px 0;display:block">ഡാറ്റ പകർത്തുക (ബാക്കപ്പ്)</button><button id="fxReload" style="padding:12px 16px;margin:6px 0;display:block">വീണ്ടും തുറക്കുക</button></div>';
+    document.getElementById("fxCopy").onclick = function () { try { navigator.clipboard.writeText(raw); this.textContent = "പകർത്തി"; } catch (x) { this.textContent = "പകർത്താൻ കഴിഞ്ഞില്ല"; } };
+    document.getElementById("fxReload").onclick = function () { location.reload(); };
+  }
   async function boot() {
-    await load(); applyTheme();
+    try { load(); applyTheme(); } catch (e) { state = freshState(); }
     locked = !!state.settings.pin;
-    wire(); render();
-    if (!loadOk) retryLoad();
+    try { wire(); render(); } catch (e) { showFatal(e); }
+    loadIdbBg();
     try { if (navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then((p) => { persisted = p; }); } catch (e) { /* ignore */ }
     if ("serviceWorker" in navigator && (location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1")) navigator.serviceWorker.register("sw.js").catch(() => {});
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
