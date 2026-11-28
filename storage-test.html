@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ml">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>സ്റ്റോറേജ് പരിശോധന</title>
+<style>
+  body{font-family:system-ui,"Noto Sans Malayalam",sans-serif;margin:0;padding:18px;background:#f4f6f8;color:#14213d;line-height:1.55}
+  h1{font-size:1.25rem;margin:0 0 12px}
+  .card{background:#fff;border-radius:14px;padding:14px 16px;margin:0 0 12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+  .ok{color:#0a7a3d;font-weight:700}.bad{color:#b3261e;font-weight:700}.mut{color:#5b6472;font-size:.88rem}
+  button{font:inherit;padding:10px 16px;border-radius:10px;border:0;background:#14213d;color:#fff;margin-top:6px}
+  pre{white-space:pre-wrap;word-break:break-word;background:#eef1f5;padding:10px;border-radius:10px;font-size:.82rem}
+</style>
+</head>
+<body>
+<h1>ഫോൺ സ്റ്റോറേജ് പരിശോധന</h1>
+<div class="card" id="opens"></div>
+<div class="card" id="results">പരിശോധിക്കുന്നു…</div>
+<div class="card mut">
+  ഈ പേജ് ഒരു തവണ തുറക്കുക. പിന്നെ <b>ഈ പേജ് പൂർണമായി അടച്ച്</b> (recent apps-ൽ നിന്നും മാറ്റി) വീണ്ടും തുറക്കുക.
+  മുകളിലെ "തുറന്ന തവണ" എണ്ണം കൂടുന്നുണ്ടെങ്കിൽ ഫോൺ ഡാറ്റ ഓർക്കുന്നു. എപ്പോഴും 1 ആണെങ്കിൽ ഓരോ തവണയും ഫോൺ ഡാറ്റ മായ്ക്കുന്നു.
+</div>
+<div class="card"><button id="copy">ഫലം പകർത്തുക</button><pre id="out"></pre></div>
+<script>
+(async function(){
+  var lines=[];
+  function add(ok,label,extra){lines.push((ok?"✔ ":"✘ ")+label+(extra?" — "+extra:""));}
+  // 1. localStorage: open counter
+  var n=0, lsOk=false, lsErr="";
+  try{
+    n=parseInt(localStorage.getItem("st_opens")||"0",10)+1;
+    localStorage.setItem("st_opens",String(n));
+    lsOk=localStorage.getItem("st_opens")===String(n);
+  }catch(e){lsErr=String(e&&e.name||e);}
+  document.getElementById("opens").innerHTML="ഈ പേജ് <b>"+(lsOk?n:"?")+"</b>-ാമത്തെ തവണയാണ് തുറക്കുന്നത്"+(lsOk?"":" <span class='bad'>(എണ്ണാൻ കഴിഞ്ഞില്ല)</span>");
+  add(lsOk,"localStorage എഴുതാനും വായിക്കാനും",lsOk?"ശരി":("പരാജയം "+lsErr));
+  // 2. IndexedDB
+  var idbOk=false, idbErr="", idbCount=0;
+  try{
+    idbCount=await Promise.race([new Promise(function(res,rej){
+      if(!window.indexedDB)return rej(new Error("indexedDB ഇല്ല"));
+      var r=indexedDB.open("st_test",1);
+      r.onupgradeneeded=function(){r.result.createObjectStore("kv");};
+      r.onerror=function(){rej(r.error||new Error("open error"));};
+      r.onblocked=function(){rej(new Error("blocked"));};
+      r.onsuccess=function(){
+        var db=r.result,g=db.transaction("kv","readonly").objectStore("kv").get("c");
+        g.onerror=function(){rej(g.error);};
+        g.onsuccess=function(){
+          var v=(g.result||0)+1,t=db.transaction("kv","readwrite");
+          t.objectStore("kv").put(v,"c");
+          t.oncomplete=function(){res(v);};
+          t.onerror=function(){rej(t.error);};
+        };
+      };
+    }),new Promise(function(_,rej){setTimeout(function(){rej(new Error("5 സെക്കൻഡിൽ പ്രതികരണമില്ല (timeout)"));},5000);})]);
+    idbOk=true;
+  }catch(e){idbErr=String(e&&(e.name||e.message)||e);}
+  add(idbOk,"IndexedDB (പ്രധാന സ്റ്റോറേജ്)",idbOk?("ശരി, എണ്ണം "+idbCount):("പരാജയം: "+idbErr));
+  // 3. cookies, storage persistence/quota, install mode
+  add(navigator.cookieEnabled,"കുക്കികൾ അനുവദിച്ചിട്ടുണ്ട്");
+  try{
+    if(navigator.storage&&navigator.storage.persisted){var p=await navigator.storage.persisted();add(p,"സ്റ്റോറേജ് സംരക്ഷിതമാണോ (persisted)",p?"അതെ":"അല്ല (സാധാരണ)");}
+  }catch(e){}
+  try{
+    if(navigator.storage&&navigator.storage.estimate){var q=await navigator.storage.estimate();
+      var mb=function(x){return Math.round(x/1048576)+" MB";};
+      add((q.quota||0)>20*1048576,"ബ്രൗസർ അനുവദിച്ച സ്ഥലം",mb(q.usage||0)+" ഉപയോഗിച്ചു / "+mb(q.quota||0)+" ലഭ്യം");}
+  }catch(e){}
+  var standalone=(window.matchMedia&&matchMedia("(display-mode: standalone)").matches)||navigator.standalone;
+  add(true,"തുറന്ന രീതി",standalone?"ഇൻസ്റ്റാൾ ചെയ്ത ആപ്പ്":"ബ്രൗസർ ടാബ്");
+  lines.push("User-Agent: "+navigator.userAgent);
+  lines.push("Origin: "+location.origin);
+  var html=lines.map(function(l){return "<div class='"+(l.charAt(0)==="✔"?"ok":l.charAt(0)==="✘"?"bad":"mut")+"'>"+l.replace(/&/g,"&amp;").replace(/</g,"&lt;")+"</div>";}).join("");
+  document.getElementById("results").innerHTML=html;
+  var txt="സ്റ്റോറേജ് പരിശോധന — തുറന്ന തവണ: "+(lsOk?n:"?")+"\n"+lines.join("\n");
+  document.getElementById("out").textContent=txt;
+  document.getElementById("copy").onclick=function(){try{navigator.clipboard.writeText(txt);this.textContent="പകർത്തി";}catch(e){this.textContent="പകർത്താൻ കഴിഞ്ഞില്ല";}};
+})();
+</script>
+</body>
+</html>
