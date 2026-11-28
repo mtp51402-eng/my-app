@@ -219,7 +219,7 @@
     c.members.forEach((m) => {
       const x = cellOf(c, m.id, mi), ms = memberStat(c, m.id), gj = gotUpTo(m.id), isGot = gj === mi;
       h += '<div class="mrow"><button type="button" class="tick ' + tickClass(c, x) + '" data-act="tick" data-m="' + m.id + '" aria-label="' + esc(m.name) + ' അടച്ചു എന്ന് അടയാളപ്പെടുത്തുക">' + tickIcon(c, x) + "</button>" +
-        '<div class="grow"><div class="trunc" style="font-weight:700">' + esc(m.name) + (gj < 0 ? "" : isGot ? ' <span class="tag gold">★ ഈ മാസം എടുത്തു</span>' : ' <span class="tag gold">★ എടുത്തു • ' + esc(mShort(chitMonth(c, gj))) + "</span>") + "</div>" +
+        '<div class="grow"><div class="trunc" style="font-weight:700">' + esc(m.name) + "</div>" + (gj < 0 ? "" : '<div style="margin:3px 0"><span class="tag gold">' + (isGot ? "★ ഈ മാസം എടുത്തു" : "★ എടുത്തു • " + esc(mShort(chitMonth(c, gj)))) + "</span></div>") +
         '<div class="small muted num">' + ms.paid + "/" + c.months + " മാസം" + (x && x.s === "paid" && paidOf(c, x) !== c.amount ? " • " + money(paidOf(c, x)) : "") + (x && x.s === "miss" ? " • ഈ മാസം ഒഴിവ്" : "") + (x && x.note ? " • " + esc(x.note) : "") + "</div></div>" +
         (ms.due > 0 ? '<span class="tag neg num">ബാക്കി ' + money(ms.due) + "</span>" : '<span class="tag pos">ക്ലിയർ</span>') +
         '<button type="button" class="icon-btn" data-act="cell" data-m="' + m.id + '" aria-label="വിശദാംശം" style="width:34px;height:34px">' + ICON.dots + "</button></div>";
