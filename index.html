@@ -22,6 +22,31 @@
   <div id="sheetRoot"></div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <noscript><p style="padding:24px">ഈ ആപ്പ് പ്രവർത്തിക്കാൻ JavaScript ആവശ്യമാണ്.</p></noscript>
-  <script src="app.js"></script>
+  <script>
+  /* സുരക്ഷ: ആപ്പ് 4 സെക്കൻഡിനുള്ളിൽ വരച്ചില്ലെങ്കിൽ പിശക് കാണിക്കുകയും പഴയ കാഷെ മായ്ച്ച് ഒരു തവണ വീണ്ടും ലോഡ് ചെയ്യുകയും ചെയ്യും. ഡാറ്റ (kk_state) തൊടുന്നില്ല. */
+  (function () {
+    var errs = [];
+    window.addEventListener("error", function (e) { errs.push(String(e.message || e.type) + (e.filename ? " @" + String(e.filename).split("/").pop() + ":" + e.lineno : "")); });
+    window.addEventListener("unhandledrejection", function (e) { errs.push("promise: " + String((e.reason && e.reason.message) || e.reason)); });
+    setTimeout(function () {
+      var r = document.getElementById("root");
+      if (r && r.children.length) return;
+      var tried = false; try { tried = sessionStorage.getItem("kk_heal") === "1"; } catch (x) {}
+      var heal = function () {
+        try { sessionStorage.setItem("kk_heal", "1"); } catch (x) {}
+        var jobs = [];
+        try { if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (x) { return x.unregister(); })); })); } catch (x) {}
+        try { if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); })); } catch (x) {}
+        Promise.all(jobs).catch(function () {}).then(function () { location.reload(); });
+      };
+      if (!tried) { heal(); return; }
+      var raw = ""; try { raw = localStorage.getItem("kk_state") || ""; } catch (x) {}
+      document.body.insertAdjacentHTML("afterbegin", '<div style="padding:24px;font-family:sans-serif"><h2>ആപ്പ് തുറക്കാൻ കഴിഞ്ഞില്ല</h2><p>ഡാറ്റ നഷ്ടമായിട്ടില്ല.</p><p style="color:#b3261e;word-break:break-word;font-size:.9rem">' + (errs.join(" | ") || "പിശക് സന്ദേശമില്ല (app.js ലോഡ് ആയിട്ടില്ലായിരിക്കാം)").replace(/</g, "&lt;") + '</p><button id="kkH" style="padding:12px 16px;display:block;margin:8px 0">ഡാറ്റ പകർത്തുക</button><button id="kkR" style="padding:12px 16px;display:block;margin:8px 0">വീണ്ടും ശ്രമിക്കുക</button></div>');
+      document.getElementById("kkH").onclick = function () { try { navigator.clipboard.writeText(raw); this.textContent = "പകർത്തി"; } catch (x) { this.textContent = "പകർത്താൻ കഴിഞ്ഞില്ല"; } };
+      document.getElementById("kkR").onclick = function () { try { sessionStorage.removeItem("kk_heal"); } catch (x) {} heal(); };
+    }, 4000);
+  })();
+  </script>
+  <script src="app.js?v=105"></script>
 </body>
 </html>
